@@ -65,7 +65,7 @@ dig +short resume.thetan.in
 ```bash
 ssh root@<VPS_IP>
 mkdir -p /var/www/resume && cd /var/www/resume
-git clone https://github.com/TanishqTapAcademy/resume_builder.git .
+git clone https://github.com/TanishqWork/resume_builder.git .
 bash deploy/setup-vps.sh          # add ENABLE_SWAP=1 to also create 2 GB swap
 ```
 

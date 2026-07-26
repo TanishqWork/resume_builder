@@ -130,7 +130,7 @@ Provisioning done. Next steps:
 
   1. Clone the repo (if not already):
        cd /var/www/resume
-       git clone https://github.com/TanishqTapAcademy/resume_builder.git .
+       git clone https://github.com/TanishqWork/resume_builder.git .
 
   2. Create backend/.env  (NEVER committed — see deploy/README.md for the template)
 
