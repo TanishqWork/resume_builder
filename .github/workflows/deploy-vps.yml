@@ -1,0 +1,245 @@
+name: Deploy to VPS
+
+# Replaces the old Vercel + Render auto-deploys. Push to main -> resume.thetan.in
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   VPS_HOST     the VPS IP or hostname
+#   VPS_USER     ssh user (root, matching the existing setup on this box)
+#   VPS_SSH_KEY  the PRIVATE half of a keypair whose public half is in
+#                ~/.ssh/authorized_keys on the VPS. Include the BEGIN/END lines.
+#   VPS_PORT     optional, defaults to 22
+#
+# Nothing secret is needed for the build itself: frontend/.env.production only
+# contains VITE_API_BASE_URL=/api, and the backend reads its real secrets from
+# /var/www/resume/backend/.env, which lives only on the server.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:      # "Run workflow" button — always deploys both halves
+
+# Never let two deploys interleave on the same box. A second push waits for the
+# first to finish rather than racing it through git reset / pm2 reload.
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+env:
+  APP_ROOT: /var/www/resume
+  SITE_URL: https://resume.thetan.in
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Work out what actually changed, so a CSS tweak doesn't reinstall Python deps
+  # and a backend fix doesn't rebuild the bundle.
+  # ---------------------------------------------------------------------------
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      frontend: ${{ steps.filter.outputs.frontend }}
+      backend: ${{ steps.filter.outputs.backend }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # need history to diff against the previous push
+
+      - id: filter
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          deploy_both() {
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+            echo "backend=true"  >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          # Manual runs deploy everything — that's the point of the button.
+          # NB: written as an if-block, not `[[ ... ]] && deploy_both`. Under
+          # `set -e` a false && list exits the whole script with status 1.
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            deploy_both
+          fi
+
+          BASE="${{ github.event.before }}"
+          # A brand-new branch or a force-push gives an all-zero / unreachable
+          # base commit. Can't diff it, so deploy everything to be safe.
+          if [[ -z "$BASE" || "$BASE" == "0000000000000000000000000000000000000000" ]] \
+             || ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+            deploy_both
+          fi
+
+          CHANGED="$(git diff --name-only "$BASE" "${{ github.sha }}")"
+          echo "Changed files:"; echo "$CHANGED" | sed 's/^/  /'
+
+          fe=false; be=false
+          if grep -qE '^frontend/' <<<"$CHANGED"; then fe=true; fi
+          if grep -qE '^backend/'  <<<"$CHANGED"; then be=true; fi
+          # Deploy plumbing (nginx conf, pm2 config, scripts, this workflow)
+          # affects both halves.
+          if grep -qE '^(deploy/|\.github/workflows/)' <<<"$CHANGED"; then fe=true; be=true; fi
+
+          echo "frontend=$fe" >> "$GITHUB_OUTPUT"
+          echo "backend=$be"  >> "$GITHUB_OUTPUT"
+          echo "-> frontend=$fe backend=$be"
+
+  # ---------------------------------------------------------------------------
+  # Put the VPS git tree on exactly this commit, once, before either deploy job
+  # runs. Doing it here (rather than inside both jobs) avoids two concurrent
+  # `git reset --hard` calls fighting over the same working tree.
+  # ---------------------------------------------------------------------------
+  sync:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true' || needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -p "${{ secrets.VPS_PORT || '22' }}" -H "${{ secrets.VPS_HOST }}" \
+            >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Checkout commit on VPS
+        run: |
+          ssh -i ~/.ssh/id_deploy -p "${{ secrets.VPS_PORT || '22' }}" \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "set -euo pipefail
+             cd ${{ env.APP_ROOT }}
+             git fetch --prune origin
+             git reset --hard ${{ github.sha }}
+             git log --oneline -1"
+
+  # ---------------------------------------------------------------------------
+  # Frontend: build on the RUNNER, ship only dist/.
+  #
+  # The VPS has 2 vCPU shared with quiz-backend and next-app; a Vite build there
+  # would spike CPU on a live box for no reason. GitHub's runners are free and
+  # idle, so the build happens there and the VPS just receives static files.
+  # ---------------------------------------------------------------------------
+  frontend:
+    needs: [changes, sync]
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Build
+        working-directory: frontend
+        # vite build runs in production mode, so frontend/.env.production is
+        # picked up automatically -> VITE_API_BASE_URL=/api is baked in.
+        run: |
+          npm run build
+          test -f dist/index.html
+          du -sh dist
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -p "${{ secrets.VPS_PORT || '22' }}" -H "${{ secrets.VPS_HOST }}" \
+            >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Upload build
+        # Into dist.new, NOT dist — nginx is serving dist right now. The trailing
+        # slash on the source means "contents of dist", not "dist itself".
+        run: |
+          rsync -az --delete \
+            -e "ssh -i ~/.ssh/id_deploy -p ${{ secrets.VPS_PORT || '22' }}" \
+            frontend/dist/ \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:${{ env.APP_ROOT }}/frontend/dist.new/"
+
+      - name: Swap into place
+        # Two renames on one filesystem — the live site flips over in
+        # microseconds instead of being half-written for the length of an upload.
+        # dist.prev is kept as a one-command rollback.
+        run: |
+          ssh -i ~/.ssh/id_deploy -p "${{ secrets.VPS_PORT || '22' }}" \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "set -euo pipefail
+             cd ${{ env.APP_ROOT }}/frontend
+             test -f dist.new/index.html
+             rm -rf dist.prev
+             [ -d dist ] && mv dist dist.prev || true
+             mv dist.new dist
+             echo 'published:' && ls dist | head"
+
+  # ---------------------------------------------------------------------------
+  # Backend: install deps + reload PM2 on the VPS. The heavy lifting lives in
+  # deploy/deploy-backend.sh so the exact same path works by hand over SSH.
+  # ---------------------------------------------------------------------------
+  backend:
+    needs: [changes, sync]
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -p "${{ secrets.VPS_PORT || '22' }}" -H "${{ secrets.VPS_HOST }}" \
+            >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy backend
+        # SKIP_PULL=1 — the sync job already checked out this exact commit.
+        # The script import-checks the app BEFORE reloading, so a broken commit
+        # leaves the previous version serving traffic instead of taking the site
+        # down, and it fails this step loudly.
+        run: |
+          ssh -i ~/.ssh/id_deploy -p "${{ secrets.VPS_PORT || '22' }}" \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "SKIP_PULL=1 bash ${{ env.APP_ROOT }}/deploy/deploy-backend.sh"
+
+  # ---------------------------------------------------------------------------
+  # Prove the public site actually works after deploying. Without this a deploy
+  # can go green while the site is down.
+  # ---------------------------------------------------------------------------
+  smoke:
+    needs: [changes, frontend, backend]
+    # always() so this still runs when one half was skipped (unchanged), but the
+    # explicit failure checks below keep it from masking a real failure.
+    if: always() && (needs.changes.outputs.frontend == 'true' || needs.changes.outputs.backend == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if a deploy job failed
+        if: needs.frontend.result == 'failure' || needs.backend.result == 'failure'
+        run: |
+          echo "frontend=${{ needs.frontend.result }} backend=${{ needs.backend.result }}"
+          exit 1
+
+      - name: API health
+        run: |
+          for i in $(seq 1 10); do
+            if curl -fsS --max-time 10 "${{ env.SITE_URL }}/api/" | tee /dev/stderr | grep -q '"status":"ok"'; then
+              echo "API healthy"; exit 0
+            fi
+            sleep 3
+          done
+          echo "API health check failed"; exit 1
+
+      - name: Frontend reachable
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${{ env.SITE_URL }}/")
+          echo "GET / -> $code"
+          [ "$code" = "200" ]
+
+      - name: SPA fallback works
+        # A deep link must return the app shell, not a 404 — this is the
+        # try_files rule that replaces vercel.json's rewrite.
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${{ env.SITE_URL }}/login")
+          echo "GET /login -> $code"
+          [ "$code" = "200" ]

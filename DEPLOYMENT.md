@@ -1,5 +1,13 @@
 # DEPLOYMENT  Putting the LaTeX Resume Builder Online (with Docker)
 
+> **⚠️ SUPERSEDED — background reading only.**
+> Production now runs on a self-hosted VPS at **https://resume.thetan.in**
+> (Nginx + PM2 + Neon), deployed by GitHub Actions. The Vercel and Render
+> setup this document describes has been retired.
+> **The current runbook is [deploy/README.md](deploy/README.md).**
+> `backend/Dockerfile` is kept as the reference for which TeX Live packages the
+> app needs — keep it in step with `deploy/setup-vps.sh`.
+
 > Goal: Take the working app from DEVELOPMENT.md and put it on the internet so it's
 > a real website. The one NEW thing here is **Docker**. Read DEVELOPMENT.md first 
 > the app (React + Python + LaTeX) is exactly the same; deployment just wraps it.

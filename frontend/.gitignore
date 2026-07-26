@@ -12,6 +12,17 @@ dist
 dist-ssr
 *.local
 
+# VPS deploy staging/rollback dirs (deploy/deploy-frontend.sh, CI atomic swap).
+# `dist` above does not match these.
+dist.new
+dist.prev
+dist.bad
+
+# Local env only. .env.production IS committed on purpose — it holds no secrets,
+# just VITE_API_BASE_URL=/api, and CI needs it to build a correct bundle.
+.env
+.env.local
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
