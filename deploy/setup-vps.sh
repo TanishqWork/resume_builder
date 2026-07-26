@@ -137,8 +137,11 @@ Provisioning done. Next steps:
   3. First backend deploy:
        bash /var/www/resume/deploy/deploy-backend.sh
 
-  4. Install the nginx vhost:
-       ln -sf /var/www/resume/deploy/nginx/resume.thetan.in.conf \
+  4. Install the nginx vhost (COPY, don't symlink — certbot must own the live
+     file, or a later `git reset --hard` reverts its SSL block):
+       cp /var/www/resume/deploy/nginx/resume.thetan.in.conf \
+          /etc/nginx/sites-available/resume.thetan.in.conf
+       ln -sf /etc/nginx/sites-available/resume.thetan.in.conf \
               /etc/nginx/sites-enabled/resume.thetan.in.conf
        nginx -t && systemctl reload nginx
 

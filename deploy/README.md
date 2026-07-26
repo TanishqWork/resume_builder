@@ -126,8 +126,16 @@ bash /var/www/resume/deploy/deploy-frontend.sh
 (One time only — after this, CI builds on a GitHub runner and rsyncs `dist/`.)
 
 ### 6. Nginx
+
+**Copy the vhost — do not symlink it into the git clone.** Certbot rewrites the
+vhost in place to add the `:443` block; if `sites-enabled` pointed at the file
+inside `/var/www/resume`, the next deploy's `git reset --hard` would revert
+certbot's edit and HTTPS would die at the following reload or reboot.
+
 ```bash
-ln -sf /var/www/resume/deploy/nginx/resume.thetan.in.conf \
+cp /var/www/resume/deploy/nginx/resume.thetan.in.conf \
+   /etc/nginx/sites-available/resume.thetan.in.conf
+ln -sf /etc/nginx/sites-available/resume.thetan.in.conf \
        /etc/nginx/sites-enabled/resume.thetan.in.conf
 nginx -t && systemctl reload nginx
 ```
@@ -200,12 +208,20 @@ the freshly pulled copy of themselves, so a mid-run `git` operation can't
 corrupt the running script.
 
 ### Nginx config changes
-Pushing `deploy/nginx/*.conf` updates the file in the repo clone. Because
-`sites-enabled` is a **symlink** into that clone, the new config is on disk
-immediately — but Nginx does not reload itself:
+The repo copy is a **template**; the live file is `/etc/nginx/sites-available/`.
+Pushing a change to `deploy/nginx/*.conf` therefore does **not** apply itself —
+copy it over, re-install the cert (this re-adds the `:443` block that the copy
+just overwrote), and reload:
+
 ```bash
+cp /var/www/resume/deploy/nginx/resume.thetan.in.conf \
+   /etc/nginx/sites-available/resume.thetan.in.conf
+certbot install --cert-name resume.thetan.in     # re-adds SSL; does NOT re-issue
 nginx -t && systemctl reload nginx
 ```
+
+`certbot install` reuses the existing certificate, so there is no ACME request
+and no rate-limit risk. Never skip it after a `cp`, or you drop back to HTTP-only.
 
 ---
 
