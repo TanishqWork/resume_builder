@@ -1,0 +1,153 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 690" width="1280" height="690" role="img" aria-label="The verify and repair loop">
+  <title>Verify &amp; repair loop - generate, sanitize, compile, one page, grounded, ship</title>
+
+  <defs>
+    <pattern id="rdots" width="26" height="26" patternUnits="userSpaceOnUse">
+      <circle cx="1.5" cy="1.5" r="1.1" fill="#93A4BC" fill-opacity="0.13"/>
+    </pattern>
+    <marker id="rah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#34D399"/>
+    </marker>
+    <marker id="rar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#F87171"/>
+    </marker>
+    <filter id="rglow" x="-70%" y="-70%" width="240%" height="240%">
+      <feGaussianBlur stdDeviation="50"/>
+    </filter>
+    <clipPath id="rcard"><rect width="1280" height="690" rx="20"/></clipPath>
+
+    <style>
+      .f  { font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+      .m  { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+      .lbl{ font-size: 11.5px; letter-spacing: 1.9px; fill: #7E90A9; }
+      .s  { font-size: 11.5px; fill: #92A5BE; }
+
+      .happy { stroke-dasharray: 14 300; animation: hrun 4.2s linear infinite; }
+      @keyframes hrun { to { stroke-dashoffset: -314 } }
+
+      .fail1 { stroke-dasharray: 10 900; animation: frun 9s linear infinite 0.4s;   }
+      .fail2 { stroke-dasharray: 10 900; animation: frun 9s linear infinite 3.4s;   }
+      .fail3 { stroke-dasharray: 10 900; animation: frun 9s linear infinite 6.4s;   }
+      @keyframes frun { 0% { stroke-dashoffset: 0; opacity: 1 } 34%,100% { stroke-dashoffset: -910; opacity: 0 } }
+
+      .g1 { animation: gate 9s ease-in-out infinite 0s;   }
+      .g2 { animation: gate 9s ease-in-out infinite 3s;   }
+      .g3 { animation: gate 9s ease-in-out infinite 6s;   }
+      @keyframes gate { 0%,88%,100% { stroke: #24354F } 4%,16% { stroke: #F87171 } 20%,32% { stroke: #34D399 } }
+
+      .tick { animation: tick 9s steps(1) infinite; }
+      @keyframes tick { 0% { width: 0 } 34% { width: 118px } 67% { width: 236px } 100% { width: 236px } }
+
+      @media (prefers-reduced-motion: reduce) {
+        .happy,.fail1,.fail2,.fail3,.g1,.g2,.g3,.tick { animation: none }
+      }
+    </style>
+  </defs>
+
+  <g clip-path="url(#rcard)">
+    <rect width="1280" height="690" fill="#05070D"/>
+    <rect width="1280" height="690" fill="url(#rdots)"/>
+    <circle cx="1120" cy="90" r="180" fill="#059669" fill-opacity="0.16" filter="url(#rglow)"/>
+    <circle cx="230" cy="520" r="180" fill="#B91C1C" fill-opacity="0.13" filter="url(#rglow)"/>
+
+    <text class="m lbl" x="40" y="38">VERIFY &amp; REPAIR LOOP</text>
+    <text class="m" x="1240" y="38" font-size="11.5" text-anchor="end" fill="#4E6076">generation_service.py</text>
+
+    <!-- ================= happy path ================= -->
+    <g stroke-linecap="round" fill="none">
+      <path d="M216 132 H246"   stroke="#1E3A2C" stroke-width="2"/>
+      <path d="M422 132 H452"   stroke="#1E3A2C" stroke-width="2"/>
+      <path d="M628 132 H658"   stroke="#1E3A2C" stroke-width="2"/>
+      <path d="M834 132 H864"   stroke="#1E3A2C" stroke-width="2"/>
+      <path d="M1040 132 H1070" stroke="#1E3A2C" stroke-width="2"/>
+      <path class="happy" d="M40 132 H1246" stroke="#34D399" stroke-width="3"/>
+    </g>
+
+    <!-- 1 generate -->
+    <rect x="40" y="90" width="176" height="84" rx="11" fill="#0C1421" stroke="#3B5C8A"/>
+    <text class="m" x="58" y="116" font-size="12" fill="#7DD3FC">gpt-5</text>
+    <text class="f" x="58" y="138" font-size="13.5" font-weight="700" fill="#E4EDF9">writes the full .tex</text>
+    <text class="f s" x="58" y="158">one shot, not streamed</text>
+
+    <!-- 2 sanitize -->
+    <rect x="246" y="90" width="176" height="84" rx="11" fill="#0C1421" stroke="#5B4A1E"/>
+    <text class="m" x="264" y="116" font-size="12" fill="#FCD34D">ats_sanitize()</text>
+    <text class="f" x="264" y="138" font-size="13.5" font-weight="700" fill="#E4EDF9">pure code</text>
+    <text class="f s" x="264" y="158">always runs, never retries</text>
+
+    <!-- 3 gate compile -->
+    <rect class="g1" x="452" y="90" width="176" height="84" rx="11" fill="#0C1421" stroke="#24354F" stroke-width="2"/>
+    <text class="m lbl" x="470" y="114">GATE 1</text>
+    <text class="f" x="470" y="138" font-size="13.5" font-weight="700" fill="#E4EDF9">does it compile?</text>
+    <text class="f s" x="470" y="158">pdflatex, 20s cap</text>
+
+    <!-- 4 gate pages -->
+    <rect class="g2" x="658" y="90" width="176" height="84" rx="11" fill="#0C1421" stroke="#24354F" stroke-width="2"/>
+    <text class="m lbl" x="676" y="114">GATE 2</text>
+    <text class="f" x="676" y="138" font-size="13.5" font-weight="700" fill="#E4EDF9">exactly one page?</text>
+    <text class="f s" x="676" y="158">pypdf page count</text>
+
+    <!-- 5 gate facts -->
+    <rect class="g3" x="864" y="90" width="176" height="84" rx="11" fill="#0C1421" stroke="#24354F" stroke-width="2"/>
+    <text class="m lbl" x="882" y="114">GATE 3</text>
+    <text class="f" x="882" y="138" font-size="13.5" font-weight="700" fill="#E4EDF9">every claim real?</text>
+    <text class="f s" x="882" y="158">judge vs whole profile</text>
+
+    <!-- 6 ship -->
+    <rect x="1070" y="90" width="176" height="84" rx="11" fill="#08150F" stroke="#2F6B4F"/>
+    <text class="m lbl" x="1088" y="114" fill="#34D399">DELIVER</text>
+    <text class="f" x="1088" y="138" font-size="13.5" font-weight="700" fill="#6EE7B7">one-page PDF</text>
+    <text class="f s" x="1088" y="158">+ warnings, if any</text>
+
+    <!-- ================= failure branches ================= -->
+    <!-- gate 1 fails: FULL regenerate -->
+    <path d="M540 174 V246 H128 V174" fill="none" stroke="#3A1D1D" stroke-width="2" marker-end="url(#rar)"/>
+    <path class="fail1" d="M540 174 V246 H128 V174" fill="none" stroke="#F87171" stroke-width="3"/>
+    <text class="m" x="556" y="240" font-size="11.5" fill="#FCA5A5">FAIL → full regenerate, with the pdflatex error log pasted back in</text>
+    <text class="f s" x="556" y="258" fill="#6C7F97">structure may be broken — surgery will not save it</text>
+
+    <!-- gate 2 fails: EDIT condense -->
+    <path d="M746 174 V326 H320 V174" fill="none" stroke="#3A1D1D" stroke-width="2" marker-end="url(#rar)"/>
+    <path class="fail2" d="M746 174 V326 H320 V174" fill="none" stroke="#F87171" stroke-width="3"/>
+    <text class="m" x="762" y="320" font-size="11.5" fill="#FCA5A5">FAIL → edit mode: condense, lowest JD-relevance content first</text>
+    <text class="f s" x="762" y="338" fill="#6C7F97">the document is fine, it is just too long</text>
+
+    <!-- gate 3 fails: EDIT strip -->
+    <path d="M952 174 V406 H348 V174" fill="none" stroke="#3A1D1D" stroke-width="2" marker-end="url(#rar)"/>
+    <path class="fail3" d="M952 174 V406 H348 V174" fill="none" stroke="#F87171" stroke-width="3"/>
+    <text class="m" x="968" y="400" font-size="11.5" fill="#FCA5A5">FAIL → edit mode: strip the quoted claim</text>
+    <text class="f s" x="968" y="418" fill="#6C7F97">surgical removal — keep the good resume</text>
+
+    <!-- edit safety note -->
+    <rect x="40" y="440" width="560" height="58" rx="10" fill="#0A1019" stroke="#243A57"/>
+    <text class="m" x="58" y="464" font-size="11.5" fill="#7DD3FC">utils/edits.py — the safety net</text>
+    <text class="f s" x="58" y="484">An edit applies only if its anchor occurs EXACTLY once. Otherwise: fall back to a full regenerate.</text>
+
+    <!-- budget meter -->
+    <rect x="620" y="440" width="620" height="58" rx="10" fill="#0A1019" stroke="#243A57"/>
+    <text class="m" x="638" y="464" font-size="11.5" fill="#A9BCD4">max_total_model_calls = 6</text>
+    <text class="f s" x="880" y="464">plus a hard outer bound, so it provably terminates</text>
+    <rect x="638" y="474" width="236" height="8" rx="4" fill="#16202F"/>
+    <rect class="tick" x="638" y="474" width="118" height="8" rx="4" fill="#38BDF8"/>
+
+    <!-- ================= terminal rules ================= -->
+    <text class="m lbl" x="40" y="540">WHEN THE BUDGET RUNS OUT — FAIL CLOSED ON CORRECTNESS, FAIL OPEN ON COSMETICS</text>
+
+    <rect x="40" y="556" width="386" height="98" rx="11" fill="#12080A" stroke="#5C2626"/>
+    <text class="f" x="58" y="582" font-size="13.5" font-weight="700" fill="#FCA5A5">Still will not compile</text>
+    <text class="m" x="58" y="606" font-size="12" fill="#F87171">REFUSE · 422 + log snippet</text>
+    <text class="f s" x="58" y="630">No usable PDF exists. Say so.</text>
+
+    <rect x="447" y="556" width="386" height="98" rx="11" fill="#141005" stroke="#5B4A1E"/>
+    <text class="f" x="465" y="582" font-size="13.5" font-weight="700" fill="#FCD34D">Still spills to 1.1 pages</text>
+    <text class="m" x="465" y="606" font-size="12" fill="#FBBF24">SHIP · with a warning header</text>
+    <text class="f s" x="465" y="630">A slightly long resume is still usable.</text>
+
+    <rect x="854" y="556" width="386" height="98" rx="11" fill="#12080A" stroke="#5C2626"/>
+    <text class="f" x="872" y="582" font-size="13.5" font-weight="700" fill="#FCA5A5">Still fabricating</text>
+    <text class="m" x="872" y="606" font-size="12" fill="#F87171">REFUSE · never ship it</text>
+    <text class="f s" x="872" y="630">A fake fact is worse than no output.</text>
+
+    <rect x="0.5" y="0.5" width="1279" height="689" rx="20" fill="none" stroke="#1B2942"/>
+  </g>
+</svg>
