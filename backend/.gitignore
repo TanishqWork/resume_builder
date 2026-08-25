@@ -15,3 +15,7 @@ __pycache__/
 *.fls
 *.fdb_latexmk
 *.synctex.gz
+
+# Never commit env copies/backups. Only .env.example is tracked here.
+.env.*
+!.env.example

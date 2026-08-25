@@ -1,0 +1,21 @@
+# Normalize line endings so the mac/ and windows/ launchers both work no matter
+# what core.autocrlf a contributor has set.
+
+* text=auto
+
+# Shell scripts MUST stay LF. bash on macOS/Linux fails on CRLF with a confusing
+# "\r: command not found", so never let autocrlf convert these on checkout.
+*.sh        text eol=lf
+
+# Windows launchers want CRLF. cmd.exe is strict about it in .bat/.cmd files.
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+*.ps1       text eol=crlf
+
+# Binary assets - never touch.
+*.pdf       binary
+*.png       binary
+*.jpg       binary
+*.ico       binary
+*.woff      binary
+*.woff2     binary

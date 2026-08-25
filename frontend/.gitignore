@@ -33,3 +33,8 @@ dist.bad
 *.njsproj
 *.sln
 *.sw?
+
+# Env copies/backups (.env.bak-prodcopy and friends). .env.production stays
+# tracked on purpose — it holds no secrets and CI needs it to build.
+.env.*
+!.env.production

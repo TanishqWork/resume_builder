@@ -1,8 +1,8 @@
 """Application configuration (BACKEND.md §4 — no magic values in logic).
 
-All environment-specific values live here, sourced from env vars with sane
-dev defaults so the app runs out-of-the-box on this Mac. In Docker/prod, these
-are overridden via environment variables (see DEPLOYMENT.md).
+All environment-specific values live here, sourced from env vars with sane,
+platform-neutral dev defaults. In production these are overridden via
+backend/.env on the VPS (see deploy/README.md — DEPLOYMENT.md is superseded).
 """
 from functools import lru_cache
 from pathlib import Path
@@ -13,9 +13,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # Full path to the LaTeX engine. Default = this Mac's BasicTeX install.
-    # Override in Docker (Linux path differs) — keep in sync with DEVELOPMENT.md.
-    pdflatex_path: str = "/usr/local/texlive/2026basic/bin/universal-darwin/pdflatex"
+    # Path to the LaTeX engine. Bare command name by default: correct wherever
+    # pdflatex is on PATH — the production VPS (/usr/bin/pdflatex, apt-installed
+    # by deploy/setup-vps.sh), Linux, and Windows with MiKTeX/TeX Live.
+    # Override in .env when it is NOT on PATH:
+    #   macOS BasicTeX: /usr/local/texlive/2026basic/bin/universal-darwin/pdflatex
+    #   Windows + Docker shim: ...\windows\pdflatex.cmd (see windows/README.md)
+    pdflatex_path: str = "pdflatex"
 
     # Kill a compile that runs longer than this (seconds) — guards runaway/malicious input.
     compile_timeout: int = 20
