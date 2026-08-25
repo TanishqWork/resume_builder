@@ -439,22 +439,32 @@ export async function generateResume(jd, score = null) {
 }
 
 /**
- * Apply one natural-language edit to a generated resume's LaTeX, scoped to the section it
- * targets (the backend auto-detects the section and only edits that, to save tokens).
- * The source is sent each call (session memory) — the server is stateless.
+ * One turn of the post-generation resume conversation. Not every message is an edit — the
+ * assistant answers questions too, and only proposes changes when a change was asked for.
+ *
+ * The source and the recent turns are sent each call (session memory) — the server is
+ * stateless and stores neither. The profile is NOT sent; the backend reads it from the
+ * user's own store.
+ *
+ * `kind` says what came back:
+ *   'answer'   -> conversation only; blob is null and nothing should change
+ *   'proposal' -> `tex`/`blob` are a COMPILED candidate the user must approve before it lands
+ *   'failed'   -> a change was wanted but couldn't be made; `tex` echoes the current source
  *
  * @param {string} tex - current LaTeX source
- * @param {string} message - the edit instruction
+ * @param {string} message - the user's message
  * @param {string} jd - target job description (context only)
- * @returns {Promise<{ok:boolean, reply:string, section:string, tex:string, blob:Blob|null, warning:string}>}
+ * @param {{role:string, content:string}[]} history - recent chat turns
+ * @returns {Promise<{kind:string, ok:boolean, reply:string, section:string, summary:string[],
+ *                    tex:string, blob:Blob|null, warning:string}>}
  */
-export async function editResume(tex, message, jd = '') {
+export async function editResume(tex, message, jd = '', history = []) {
   let res
   try {
     res = await fetch(`${API_BASE_URL}/resume/edit`, {
       method: 'POST',
       headers: authHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ tex, message, jd }),
+      body: JSON.stringify({ tex, message, jd, history }),
     })
   } catch {
     throw new Error(UNREACHABLE)
@@ -463,9 +473,11 @@ export async function editResume(tex, message, jd = '') {
   if (res.ok) {
     const d = await res.json()
     return {
+      kind: d.kind ?? 'answer',
       ok: d.ok,
       reply: d.reply,
       section: d.section ?? '',
+      summary: d.summary ?? [],
       tex: d.tex,
       blob: d.pdf ? pdfBlobFromB64(d.pdf) : null,
       warning: d.warning ?? '',

@@ -1,13 +1,16 @@
-// Right-side chat panel for editing a generated resume conversationally.
-// Dumb component: it renders the message log + input; useResumeChat owns the async work.
+// Right-side chat panel for the post-generation resume conversation.
+// Dumb component: it renders the message log, any pending proposal, and the input;
+// useResumeChat owns the async work and the apply/dismiss decision.
 
 import { useEffect, useRef, useState } from 'react'
-import { Loader2, Send, Sparkles, User } from 'lucide-react'
+import { Check, Loader2, Send, Sparkles, User, X } from 'lucide-react'
 
+// A mix of both things the assistant does, so it reads as a conversation rather than a
+// command box: two edits and one question.
 const SUGGESTIONS = [
   'Make the summary punchier',
+  'What am I missing for this job?',
   'Shorten the first experience bullet',
-  'Add Python to my skills',
 ]
 
 export default function ResumeChat({ chat, onSend, disabled = false }) {
@@ -17,7 +20,7 @@ export default function ResumeChat({ chat, onSend, disabled = false }) {
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [chat.messages, sending])
+  }, [chat.messages, chat.pending, sending])
 
   function submit(e) {
     e.preventDefault()
@@ -37,7 +40,8 @@ export default function ResumeChat({ chat, onSend, disabled = false }) {
         {chat.messages.length === 0 && (
           <div className="space-y-3">
             <p className="text-xs text-[var(--color-muted)]">
-              Tell me what to change and I’ll edit just that part of the resume to keep it fast.
+              Ask me anything about this resume or the job — or tell me what to change and
+              I’ll show you the edit before it’s applied.
             </p>
             <div className="flex flex-wrap gap-2">
               {SUGGESTIONS.map((s) => (
@@ -57,6 +61,43 @@ export default function ResumeChat({ chat, onSend, disabled = false }) {
         {chat.messages.map((m, i) => (
           <Bubble key={i} m={m} />
         ))}
+
+        {/* A compiled candidate waiting for approval. Nothing has changed in the preview
+            yet — applying is what makes it live. */}
+        {chat.pending && (
+          <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3">
+            <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-emerald-300">
+              Proposed change{chat.pending.section ? ` — ${chat.pending.section}` : ''}
+            </p>
+            {chat.pending.summary?.length > 0 && (
+              <ul className="mb-3 space-y-1">
+                {chat.pending.summary.map((s, i) => (
+                  <li key={i} className="flex gap-1.5 text-xs text-white/80">
+                    <span className="text-emerald-300">•</span>
+                    <span>{s}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {chat.pending.warning && (
+              <p className="mb-3 text-xs text-amber-200">{chat.pending.warning}</p>
+            )}
+            <div className="flex gap-2">
+              <button
+                onClick={chat.apply}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-black transition hover:brightness-110"
+              >
+                <Check className="h-3.5 w-3.5" /> Apply
+              </button>
+              <button
+                onClick={chat.dismiss}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] px-3 py-1.5 text-xs text-white/90 transition hover:bg-white/5"
+              >
+                <X className="h-3.5 w-3.5" /> Discard
+              </button>
+            </div>
+          </div>
+        )}
 
         {sending && (
           <div className="flex items-center gap-2 text-xs text-[var(--color-muted)]">
@@ -91,19 +132,24 @@ export default function ResumeChat({ chat, onSend, disabled = false }) {
 }
 
 function Bubble({ m }) {
+  // 'system' is the app's own confirmation after applying or discarding — centred, quiet,
+  // and clearly not something the assistant said.
+  if (m.role === 'system') {
+    return <p className="py-0.5 text-center text-[11px] text-[var(--color-muted)]">{m.text}</p>
+  }
+
   const isUser = m.role === 'user'
   return (
     <div className={`flex gap-2 ${isUser ? 'justify-end' : ''}`}>
       {!isUser && <Sparkles className="mt-1.5 h-4 w-4 shrink-0 text-blue-300" />}
       <div
-        className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm ${
+        // whitespace-pre-line: answers are prose and can span paragraphs, unlike the old
+        // one-line "Updated the X section." acknowledgements.
+        className={`max-w-[85%] whitespace-pre-line rounded-2xl px-3 py-2 text-sm ${
           isUser ? 'bg-blue-500/20 text-white' : 'bg-white/5 text-white/85'
         }`}
       >
         {m.text}
-        {!isUser && m.ok && m.section && (
-          <span className="mt-1 block text-[11px] text-emerald-300/80">✓ edited {m.section}</span>
-        )}
       </div>
       {isUser && <User className="mt-1.5 h-4 w-4 shrink-0 text-white/50" />}
     </div>

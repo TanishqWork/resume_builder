@@ -1,25 +1,36 @@
-"""Post-generation, section-scoped chat editor (the fast edit path).
+"""Post-generation resume assistant — conversation first, edits when asked.
 
-Once a resume exists, users want to tweak small things ("punch up the summary", "shorten
-the first bullet") without regenerating the whole document. Doing that cheaply is the whole
-point of this module:
+Once a resume exists the user wants two different things from the same chat box:
+  - to ASK ("what skills am I missing for this job?", "is my summary strong?")
+  - to CHANGE ("shorten the first bullet", "add Python to my skills")
 
-  1. Split the LaTeX into its `\\section{...}` blocks (+ the contact/header block).
-  2. Auto-detect which ONE block the instruction targets (a tiny, cheap classify call).
-  3. Send ONLY that block (plus the matching slice of the profile + a JD excerpt) to a fast
-     model, which returns a MINIMAL find/replace edit list — not a new document.
-  4. Apply the edits to the FULL doc on unique anchors, re-sanitize, recompile, and check it
-     still fits one page.
+So this module is not an edit pipeline with a chat skin; it is a conversation that can
+also propose edits. ONE model call handles both:
 
-Sending one section instead of the entire resume is what keeps this fast and token-light.
-We deliberately SKIP the heavy fact-grounding re-check here (LLM.md fast-edit path) — the
-edit prompt is told never to fabricate, and the user is reviewing every change live.
+  1. Send the WHOLE LaTeX document + the full profile + the JD + the recent conversation.
+  2. The model replies conversationally, and — only when the user actually asked for a
+     change — also returns a MINIMAL find/replace edit list plus a plain-English summary.
+  3. Edits apply on anchors unique in the whole document, then recompile.
+  4. The result is returned as a PROPOSAL. The caller shows it; the user applies it.
+
+WHY THE WHOLE DOCUMENT (this replaced a \\section{...} router):
+The old path regex-split the LaTeX, asked a small model to pick ONE section label, and sent
+only that block. It broke in every direction: templates name sections differently
+("Experience" vs "Work Experience" vs "Employment"), custom macros aren't \\section at all,
+a theme change renamed everything, and a request spanning two sections had nowhere to go.
+Worse, the model was shown a SECTION but its anchors were checked for uniqueness against the
+FULL document — it was judged on information it was never given, so edits failed for reasons
+it could not see. Sending the whole document removes the router, the label matching, and
+that mismatch in one move: the model sees exactly what the anchor check sees, and identifies
+the target by CONTENT rather than by a section name that may not exist.
+
+GROUNDING: this path has no fact-check judge behind it (LLM.md fast-edit path), so the full
+profile is the prompt's fact set and the user reviews every change before it lands.
 
 HTTP-agnostic (BACKEND.md §0 rule 1).
 """
 import json
 import logging
-import re
 
 from app.core.config import get_settings
 from app.services.ai_client import structured_json
@@ -31,52 +42,71 @@ from app.utils.errors import LatexCompileError
 
 logger = logging.getLogger("resume_edit")
 
-_SECTION_RE = re.compile(r"\\section\*?\s*\{([^}]*)\}")
-_BEGIN_DOC = r"\begin{document}"
-_END_DOC = r"\end{document}"
-_CONTACT = "Contact / Header"
+# Recent conversation turns passed to the model. Capped so a long session can't grow the
+# prompt without bound; matches the cap profile_ai uses for its own chat history.
+_HISTORY_TURNS = 8
 
-# Map a detected section label -> the profile keys whose facts are relevant, so we ship the
-# model only the slice it needs (more token savings). Unknown labels fall back to the whole
-# profile so grounding is never starved.
-_PROFILE_KEYS = {
-    "professional summary": ["summary"],
-    "summary": ["summary"],
-    "experience": ["experience"],
-    "work experience": ["experience"],
-    "skills": ["skills"],
-    "technical skills": ["skills"],
-    "education": ["education"],
-    "projects": ["projects"],
-    _CONTACT.lower(): ["contact"],
-}
+# JD characters included as relevance context.
+_JD_EXCERPT = 1500
 
-_EDIT_SYSTEM = """You revise ONE section of an existing LaTeX resume by returning a MINIMAL
-list of edits, NOT a new section.
+# Result kinds returned to the caller (and on to the frontend).
+KIND_ANSWER = "answer"      # pure conversation — nothing to change
+KIND_PROPOSAL = "proposal"  # edits applied + compiled, awaiting the user's approval
+KIND_FAILED = "failed"      # a change was intended but could not be produced
 
-Each edit:
-  - "find": a COMPLETE, specific substring of the SECTION below, copied verbatim (every
-    brace and backslash). Copy a whole token or phrase — NEVER a tiny fragment like a bare
-    number or single letter that also occurs inside other text. (To change "04" in an email,
-    "find" the FULL email address, not "04" — "04" also appears inside years like 2024.)
-  - "replace": the replacement text ("" to delete).
-  - "all": set true ONLY when that exact string legitimately appears more than once and every
-    copy must change together — e.g. an email or URL that appears in BOTH the \\href link
-    target and the visible label. Otherwise false. (Emails and links almost always need
-    "all": true so the clickable link and the shown text stay in sync.)
+_SYSTEM = """You are a resume assistant. The user has just generated a tailored resume and is
+now talking to you about it. You can DISCUSS it and you can CHANGE it.
 
-Rules:
-- Do ONLY what the instruction asks. Change nothing else.
+You are given the COMPLETE LaTeX document, the candidate's full PROFILE, the target JOB, and
+the recent conversation.
+
+DECIDE WHAT THE USER WANTS:
+- A QUESTION or a comment ("what am I missing for this role?", "is my summary strong?",
+  "what does this job want?", "thanks") -> just answer it. Return an EMPTY edits list.
+  Be genuinely useful: compare the profile against the job, name real gaps, give concrete
+  advice. This is a conversation, not a form.
+- A REQUEST TO CHANGE the resume ("shorten that bullet", "add Python", "make it punchier")
+  -> answer briefly AND return the edits that make it happen.
+- AMBIGUOUS ("fix this", "make it better") -> do NOT guess. Ask ONE short clarifying
+  question and return an EMPTY edits list. Asking is always better than a wrong edit.
+
+WRITING EDITS (only when the user asked for a change):
+Each edit is a find/replace on the LaTeX source you were given.
+  - "find": an EXACT substring of the document, copied verbatim, every brace and backslash
+    intact. It MUST appear EXACTLY ONCE in the WHOLE document — you can see the whole
+    document, so check. If a phrase repeats, extend it until it is unique.
+  - "replace": the replacement text ("" deletes).
+  - "all": true ONLY when a string legitimately repeats and every copy must change together
+    (an email or URL appearing in both the \\href target and the visible label). Otherwise
+    false.
+
+THE DOCUMENT MAY USE ANY TEMPLATE:
+Section names, macros, and layout vary between users and change when a theme changes. NEVER
+assume a section is called "Experience" or that \\section{} is even used. Find the target by
+reading the CONTENT of the document you were given.
+
+RULES:
+- Do ONLY what was asked. Change nothing else.
 - Use ONLY facts from the PROFILE. Never invent a skill, tool, employer, date, title, or
-  number that isn't in the profile.
-- Keep it compilable and ATS-safe: plain ASCII only (no smart quotes, no em-dashes).
-- Make the SMALLEST set of edits that satisfies the instruction.
+  number that is not there. If the user asks you to add something absent from the profile,
+  say so plainly and return an EMPTY edits list instead of writing it in.
+- Keep it compilable and ATS-safe: plain ASCII, no smart quotes, no em-dashes.
+- Make the SMALLEST set of edits that satisfies the request.
 
-Return JSON: { "edits": [ { "find": "...", "replace": "...", "all": false } ] }."""
+RETURN:
+- "reply": your message to the user. Always. Conversational and specific.
+- "section": a short human label for the part you changed ("Professional Summary", "first
+  Experience bullet"), or "" when nothing changes.
+- "summary": one short plain-English line per change, so the user can see what they are
+  approving before it is applied. Empty when nothing changes.
+- "edits": the edit list, or [] when nothing changes."""
 
-_EDITS_SCHEMA = {
+_SCHEMA = {
     "type": "object",
     "properties": {
+        "reply": {"type": "string"},
+        "section": {"type": "string"},
+        "summary": {"type": "array", "items": {"type": "string"}},
         "edits": {
             "type": "array",
             "items": {
@@ -86,190 +116,186 @@ _EDITS_SCHEMA = {
                     "replace": {"type": "string"},
                     "all": {
                         "type": ["boolean", "null"],
-                        "description": "true = replace every occurrence of find (for emails/links shown twice)",
+                        "description": "true = replace every occurrence (emails/links shown twice)",
                     },
                 },
                 "required": ["find", "replace", "all"],
                 "additionalProperties": False,
             },
-        }
+        },
     },
-    "required": ["edits"],
+    "required": ["reply", "section", "summary", "edits"],
     "additionalProperties": False,
 }
 
 
-# ---- section parsing ------------------------------------------------------
+# ---- prompt assembly ------------------------------------------------------
 
-def split_sections(tex: str) -> tuple[str, list[tuple[str, str]]]:
-    """Return (header, [(title, block_text), ...]).
-
-    `header` is everything before the first \\section (preamble + contact block). Each block
-    runs from its \\section marker to the next one (or end of document).
-    """
-    matches = list(_SECTION_RE.finditer(tex))
-    if not matches:
-        return tex, []
-    header = tex[: matches[0].start()]
-    sections: list[tuple[str, str]] = []
-    for i, m in enumerate(matches):
-        start = m.start()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(tex)
-        sections.append((m.group(1).strip(), tex[start:end]))
-    return header, sections
+def _history_block(history: list[dict]) -> str:
+    """Render recent {role, content} turns (frontend-provided) as plain context."""
+    turns = [t for t in history if (t.get("content") or "").strip()][-_HISTORY_TURNS:]
+    if not turns:
+        return "(no prior messages — this is the first thing the user has said)"
+    return "\n".join(f"{t.get('role', 'user').upper()}: {t.get('content', '')}" for t in turns)
 
 
-def _contact_block(tex: str) -> str:
-    """The visible header: from \\begin{document} up to the first \\section."""
-    b = tex.find(_BEGIN_DOC)
-    if b == -1:
-        return tex
-    start = b + len(_BEGIN_DOC)
-    m = _SECTION_RE.search(tex, start)
-    return tex[start : (m.start() if m else len(tex))]
-
-
-def _strip_enddoc(text: str) -> str:
-    idx = text.find(_END_DOC)
-    return text[:idx] if idx != -1 else text
-
-
-def _profile_subset(profile: dict, label: str) -> dict:
-    keys = _PROFILE_KEYS.get(label.strip().lower())
-    if not keys:
-        return profile
-    sub = {k: profile[k] for k in keys if k in profile}
-    return sub or profile
-
-
-# ---- model calls ----------------------------------------------------------
-
-def _route_schema(labels: list[str]) -> dict:
-    return {
-        "type": "object",
-        "properties": {"section": {"type": "string", "enum": labels}},
-        "required": ["section"],
-        "additionalProperties": False,
-    }
-
-
-async def _detect_target(message: str, labels: list[str]) -> str:
-    """Cheap classify: which section does this instruction edit? Returns a label."""
-    settings = get_settings()
-    res = await structured_json(
-        what="edit_route",
-        system=(
-            "You route a resume-edit instruction to the ONE section it changes. "
-            "Choose the single best-matching section label from the list."
-        ),
-        user=f"SECTIONS: {labels}\n\nINSTRUCTION: {message}\n\nWhich section does this edit target?",
-        schema=_route_schema(labels),
-        model=settings.gap_model_small,
-        schema_name="route",
-    )
-    return res.get("section") or labels[0]
-
-
-def _edit_user(section_text: str, message: str, jd: str, profile_subset: dict) -> str:
-    jd_excerpt = (jd or "").strip()[:1500]
+def _user_prompt(
+    tex: str, message: str, jd: str, profile: dict, history: list[dict], retry_note: str = ""
+) -> str:
     return (
-        f"INSTRUCTION (what to change): {message}\n\n"
-        "=== SECTION TO EDIT (edit only within this) ===\n"
-        f"{section_text}\n\n"
-        "=== PROFILE FACTS (only allowed facts; invent nothing) ===\n"
-        f"{json.dumps(profile_subset, ensure_ascii=False, indent=2)}\n\n"
-        "=== TARGET JOB (for relevance only; never copy verbatim) ===\n"
-        f"{jd_excerpt}"
+        f"USER MESSAGE: {message}\n\n"
+        "=== RECENT CONVERSATION (a follow-up like 'shorten it more' refers to the last "
+        "change) ===\n"
+        f"{_history_block(history)}\n\n"
+        "=== THE COMPLETE RESUME (LaTeX — your find anchors must be unique in THIS) ===\n"
+        f"{tex}\n\n"
+        "=== FULL PROFILE (the ONLY allowed facts; anything absent is fabrication) ===\n"
+        f"{json.dumps(profile, ensure_ascii=False, indent=2)}\n\n"
+        "=== TARGET JOB (for relevance and for answering questions about the role) ===\n"
+        f"{(jd or '').strip()[:_JD_EXCERPT]}"
+        + (f"\n\n=== PREVIOUS ATTEMPT FAILED ===\n{retry_note}" if retry_note else "")
     )
 
 
-async def _scoped_edit(section_text: str, message: str, jd: str, profile_subset: dict) -> list[dict]:
+async def _ask(
+    tex: str, message: str, jd: str, profile: dict, history: list[dict], retry_note: str = ""
+) -> dict:
+    """One model call: conversational reply plus (optionally) an edit list."""
     settings = get_settings()
-    res = await structured_json(
+    return await structured_json(
         what="resume_edit",
-        system=_EDIT_SYSTEM,
-        user=_edit_user(section_text, message, jd, profile_subset),
-        schema=_EDITS_SCHEMA,
+        system=_SYSTEM,
+        user=_user_prompt(tex, message, jd, profile, history, retry_note),
+        schema=_SCHEMA,
         model=settings.edit_model,
-        schema_name="edits",
+        schema_name="resume_reply",
     )
-    return res.get("edits", [])
+
+
+def _anchor_report(failures: list[dict]) -> str:
+    """Tell the model exactly why each anchor was rejected, so a retry can fix it."""
+    lines = []
+    for f in failures:
+        found = f.get("occurrences", 0)
+        why = "it does not appear in the document" if found == 0 else f"it appears {found} times"
+        lines.append(f'- "find" was rejected because {why}: {f.get("find", "")[:200]}')
+    return (
+        "These anchors could not be applied. Every \"find\" must appear EXACTLY ONCE in the "
+        "document — copy a longer, verbatim span until it is unique.\n" + "\n".join(lines)
+    )
 
 
 # ---- orchestrator ---------------------------------------------------------
 
-async def edit_resume(tex: str, message: str, jd: str, profile: dict) -> dict:
-    """Apply one natural-language edit to `tex`, scoped to the section it targets.
+async def edit_resume(
+    tex: str,
+    message: str,
+    jd: str,
+    profile: dict,
+    history: list[dict] | None = None,
+) -> dict:
+    """Answer the user, and propose resume edits when they asked for a change.
 
     Returns a dict:
-      ok    -> True if the edit landed and recompiled
-      reply -> short human message for the chat
-      section -> the label we edited
-      tex   -> new LaTeX (unchanged on failure; caller keeps the old one)
-      pdf   -> recompiled PDF bytes (only when ok)
-      pages -> page count (only when ok)
+      kind    -> "answer" | "proposal" | "failed"
+      ok      -> True unless the change was requested but could not be produced
+      reply   -> the assistant's message (always present)
+      section -> short label of the part changed ("" for an answer)
+      summary -> plain-English lines describing each proposed change
+      tex     -> proposed LaTeX (unchanged source echoed back unless kind == "proposal")
+      pdf     -> compiled PDF bytes of the proposal (only when kind == "proposal")
+      pages   -> page count of the proposal (only when kind == "proposal")
       warning -> e.g. "now 2 pages" (may be "")
-    Never raises for a normal failed edit — only AIClientError (model down) propagates.
+
+    Nothing is applied here — the caller shows the proposal and the user approves it.
+    Never raises for a normal failed edit; only AIClientError (model down) propagates.
     """
     with request_metrics("/resume/edit") as m:
-        result = await _edit_impl(tex, message, jd, profile)
+        result = await _edit_impl(tex, message, jd, profile, history or [])
+        m["kind"] = result["kind"]
         m["section"] = result.get("section", "")
         m["edit_ok"] = result["ok"]
         return result
 
 
-async def _edit_impl(tex: str, message: str, jd: str, profile: dict) -> dict:
-    header, sections = split_sections(tex)
-    labels: list[str] = []
-    if _BEGIN_DOC in header:
-        labels.append(_CONTACT)
-    labels.extend(title for title, _ in sections)
-    if not labels:
-        labels = ["Whole document"]
+def _answer(reply: str, tex: str) -> dict:
+    return {"kind": KIND_ANSWER, "ok": True, "reply": reply, "section": "", "summary": [], "tex": tex}
 
-    label = await _detect_target(message, labels)
 
-    if label == _CONTACT:
-        target = _contact_block(tex)
-    elif label == "Whole document":
-        target = tex
-    else:
-        target = next((txt for title, txt in sections if title == label), tex)
-        target = _strip_enddoc(target)
+async def _edit_impl(
+    tex: str, message: str, jd: str, profile: dict, history: list[dict]
+) -> dict:
+    res = await _ask(tex, message, jd, profile, history)
+    reply = res.get("reply") or "Done."
+    edits = res.get("edits") or []
 
-    edits = await _scoped_edit(target, message, jd, _profile_subset(profile, label))
+    # --- pure conversation: a question, advice, or a clarifying question back -----------
+    if not edits:
+        logger.info("edit answer turns=%d", len(history))
+        return _answer(reply, tex)
+
+    # --- a change was asked for: place the anchors --------------------------------------
     new_tex, failures = apply_edits(tex, edits)
 
-    if not edits or failures or new_tex == tex:
-        logger.info("edit no-op section=%s edits=%d failures=%d", label, len(edits), len(failures))
-        return {
-            "ok": False,
-            "section": label,
-            "reply": "I couldn't apply that cleanly — try rephrasing, or be more specific "
-            "about exactly what to change.",
-        }
+    # Nothing landed at all -> one retry, telling the model exactly which anchors missed.
+    # (The model can see the whole document, so a second look usually resolves it.)
+    if new_tex == tex:
+        logger.info("edit anchors all missed (%d) — retrying", len(failures))
+        res = await _ask(tex, message, jd, profile, history, _anchor_report(failures))
+        reply = res.get("reply") or reply
+        edits = res.get("edits") or []
+        if not edits:
+            return _answer(reply, tex)
+        new_tex, failures = apply_edits(tex, edits)
+        if new_tex == tex:
+            logger.info("edit failed: no anchor landed after retry")
+            return {
+                "kind": KIND_FAILED,
+                "ok": False,
+                "reply": "I couldn't locate that part of the resume precisely enough to change "
+                "it safely, so I left it as it is. Try naming the exact wording you want "
+                "changed.",
+                "section": res.get("section", ""),
+                "summary": [],
+                "tex": tex,
+            }
+
+    # Partial application is allowed — the user reviews the result before it lands — but say
+    # so, rather than silently delivering less than was asked for.
+    applied = len(edits) - len(failures)
+    if failures:
+        logger.info("edit partial applied=%d failed=%d", applied, len(failures))
+        reply += (
+            f"\n\n(Note: {applied} of {len(edits)} changes were placed; "
+            f"{len(failures)} couldn't be located. Review below.)"
+        )
 
     new_tex = ats_sanitize(new_tex)
     try:
         pdf = await compile_latex_async(new_tex)
     except LatexCompileError:
-        logger.info("edit broke compile section=%s", label)
+        logger.info("edit broke compile section=%s", res.get("section", ""))
         return {
+            "kind": KIND_FAILED,
             "ok": False,
-            "section": label,
-            "reply": "That change broke the layout, so I kept your current version. "
-            "Try a smaller or clearer edit.",
+            "reply": "That change broke the document layout, so I kept your current version. "
+            "Try a smaller or more specific edit.",
+            "section": res.get("section", ""),
+            "summary": [],
+            "tex": tex,
         }
 
     pages = count_pages(pdf)
-    warning = "" if pages <= 1 else f"It's now {pages} pages — you may want to trim something."
-    logger.info("edit ok section=%s pages=%d", label, pages)
+    warning = "" if pages <= 1 else f"This change makes it {pages} pages."
+    logger.info("edit proposal section=%s edits=%d pages=%d", res.get("section", ""), applied, pages)
     return {
+        "kind": KIND_PROPOSAL,
         "ok": True,
-        "section": label,
+        "reply": reply,
+        "section": res.get("section", ""),
+        "summary": res.get("summary") or [],
         "tex": new_tex,
         "pdf": pdf,
         "pages": pages,
         "warning": warning,
-        "reply": f"Updated the {label} section.",
     }
